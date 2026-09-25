@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:15.3-alpine
+    container_name: bloodlink-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-bloodlink}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-bloodlink}
+      POSTGRES_DB: ${DB_NAME:-bloodlink}
+    ports:
+      - '5432:5432'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+volumes:
+  db_data:
