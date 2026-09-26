@@ -27,14 +27,14 @@ BloodLink connects blood banks, hospitals, and voluntary donors on one platform.
 
 ## 1. Core Must-Have Features (from brief)
 
-| # | Feature | Owner Module |
-|---|---------|--------------|
-| 1 | Blood bank inventory portal (by group + component) | Bank Service |
-| 2 | Public search by blood group + location | Search Service |
-| 3 | Donor registration + eligibility check | Donor Service |
-| 4 | Emergency request → notify → accept flow | Matching + Notification |
-| 5 | Request status tracking (Open/Matched/Fulfilled) | Request Service |
-| 6 | Map view of banks and requests | Map Frontend |
+| #   | Feature                                            | Owner Module            |
+| --- | -------------------------------------------------- | ----------------------- |
+| 1   | Blood bank inventory portal (by group + component) | Bank Service            |
+| 2   | Public search by blood group + location            | Search Service          |
+| 3   | Donor registration + eligibility check             | Donor Service           |
+| 4   | Emergency request → notify → accept flow           | Matching + Notification |
+| 5   | Request status tracking (Open/Matched/Fulfilled)   | Request Service         |
+| 6   | Map view of banks and requests                     | Map Frontend            |
 
 These are judged at **30% weight (must-have completion)** — build and fully demo these before touching anything below.
 
@@ -47,6 +47,7 @@ These are judged at **30% weight (must-have completion)** — build and fully de
 **What it does:** Once a donor accepts a request, their browser displays an encrypted, time-limited QR code (rendered from a data URL — no native app needed). The hospital scans it at reception to cryptographically confirm arrival, block proxy/fake donations, and auto-update the donor's cooldown date — all in one action.
 
 **How it works:**
+
 1. On acceptance, backend generates a signed token: `{donor_id, request_id, issued_at, expires_at, nonce}`.
 2. Token is signed with **HMAC-SHA256** using a server-side secret (or issued as a short-lived JWT).
 3. Token is rendered as a QR code on the donor's screen (valid ~15 minutes).
@@ -64,11 +65,13 @@ These are judged at **30% weight (must-have completion)** — build and fully de
 **What it does:** Two connected sub-systems that make the whole platform trustworthy instead of just functional.
 
 **A. Hospital Verification**
+
 - New hospitals register and upload a registration document.
 - Status: `pending → verified / rejected`, reviewed by an admin.
 - Only `verified` hospitals can raise emergency requests — this prevents spam/fake emergencies from flooding donors.
 
 **B. Donor Reliability Score**
+
 - Every donor starts at a neutral score (e.g., 100).
 - **QR-confirmed arrival** → score increases, `completed_count += 1`.
 - **Accepted but never arrived** (checked by a background job against a time window, e.g. 2 hours past acceptance) → score decreases, `no_show_count += 1`.
@@ -95,6 +98,7 @@ These are judged at **30% weight (must-have completion)** — build and fully de
 ## 3. Live Rapido-Style Donor Map
 
 **The experience:** When a hospital opens an active emergency request, they see a live map exactly like a ride-hailing app:
+
 - **Hospital = one large, distinct pulsing marker** (e.g., a hospital-cross icon) at the center.
 - **Donors = small colored dots** scattered around it, color-coded by blood group, similar to how Rapido shows nearby cabs.
 - Dots update their state live: `grey = notified`, `blue = viewed`, `green = accepted / en route`, `gold ring = arrived (QR confirmed)`, `faded = declined/expired`.
@@ -202,7 +206,7 @@ QRToken          { token_id, donor_id, request_id, signed_payload, expires_at, u
 
 1. **Auth Service** — JWT-based auth, roles: `donor / hospital / bank / admin`.
 2. **Bank Inventory Service** — CRUD on inventory per bank.
-3. **Search Service** — PostGIS nearest-bank-with-stock query.
+3. **Search Service** — nearest-bank-with-stock query (`GET /search`); PostGIS still optional for production-grade radius queries (see note at the bottom of `packages/db/prisma/schema.prisma`).
 4. **Donor Service** — registration, eligibility calculation, availability toggle, location pings.
 5. **Hospital Request Service** — create multi-group requests, track status per item.
 6. **Matching Engine** — compatibility matrix + reliability-ranked donor search + wave notifications.
@@ -218,7 +222,8 @@ QRToken          { token_id, donor_id, request_id, signed_payload, expires_at, u
 POST   /auth/register
 POST   /auth/login
 
-GET    /search?blood_group=&lat=&lng=
+GET    /search?blood_group=&component=&lat=&lng=&radius_km=&in_stock=
+GET    /map/overview                         (banks + active requests for the map layer)
 
 POST   /bank/inventory
 GET    /bank/inventory
@@ -229,6 +234,8 @@ POST   /donor/location              { lat, lng }               (while online onl
 
 POST   /hospital/request            { items: [{blood_group, units}], radius_km, urgency }
 GET    /hospital/request/:id
+POST   /hospital/request/:id/close                 (OPEN|MATCHED -> CLOSED)
+POST   /hospital/request/:id/complete              (force FULFILLED)
 POST   /donor/request/:id/respond   { action: accept|decline }
 GET    /donor/request/:id/qr-token
 POST   /hospital/request/:id/verify-arrival   { token }
@@ -242,12 +249,15 @@ WebSocket events:
 ```
 
 ### Background Jobs
+
 - **No-show checker** (cron, e.g. every 10 min): scans `RequestResponse` where `status = accepted` and `now() - timestamp > threshold`, marks `no_show`, decrements donor reliability score.
 - **Eligibility refresher**: recomputes `eligible` flag daily based on `last_donation_date`.
 
 ---
 
 ## 7. Frontend — What to Build
+
+> **Full spec:** [`FRONTEND.md`](FRONTEND.md) — 26 routes across the four roles, ASCII wireframes per screen, loading/empty/error states, route → API → socket table, and a 4-milestone build order.
 
 - **Blood Bank Portal:** inventory grid, editable per group/component.
 - **Hospital Console:** multi-group request form, live map (§3), fulfillment progress bars per requested group, QR scanner page (camera-based, e.g. `html5-qrcode`).
@@ -260,28 +270,28 @@ All four are pages/routes in the same React app — donors don't need a separate
 
 ## 8. Tech Stack & Libraries
 
-| Layer | Choice | Purpose |
-|---|---|---|
-| Backend framework | Node.js + Express (or FastAPI) | REST API |
-| Database | PostgreSQL + **PostGIS** | Geo-radius queries in one SQL call |
-| Cache / live state | Redis | Live donor locations, pub/sub for scale |
-| Realtime | Socket.IO | Live map + status updates |
-| Auth | `jsonwebtoken`, `bcrypt` | JWT auth + password hashing |
-| QR generation | `qrcode` (npm) | Render QR on donor screen |
-| QR verification | HMAC-SHA256 (via `crypto` / `jsonwebtoken`) | Signed, time-limited tokens |
-| QR scanning (web) | `html5-qrcode` | Camera-based scan at hospital reception |
-| Push notifications | Firebase Admin SDK (FCM) or Web Push | Best-effort; reliable mainly while the donor's tab is open — see §3 |
-| SMS fallback | Twilio SDK | Primary alert channel when a donor's tab isn't open |
-| Scheduled jobs | `node-cron` | No-show detection, eligibility refresh |
-| Validation | `zod` or `express-validator` | Request payload validation |
-| Frontend (dashboards) | React + Vite + TailwindCSS | Bank/Hospital/Admin UIs |
-| Map | Leaflet + `react-leaflet` (OpenStreetMap, free) | Live donor/hospital map |
-| Data fetching | Axios / React Query | API calls, caching |
-| Charts | Recharts | Reports/stats |
-| Donor web app | Same React + Vite + TailwindCSS stack as the other dashboards | One unified codebase, no separate mobile build or app-store step |
-| Browser geolocation | `navigator.geolocation.watchPosition()` (built-in, no library) | Location pings while the availability toggle is on |
-| Optional web push | `web-push` (npm) + Service Worker + VAPID keys | Best-effort notification when the tab is backgrounded (bonus, not primary) |
-| Security | HTTPS, `helmet`, `cors`, rate limiting (`express-rate-limit`) | Basic API hardening |
+| Layer                 | Choice                                                         | Purpose                                                                    |
+| --------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Backend framework     | Node.js + Express (or FastAPI)                                 | REST API                                                                   |
+| Database              | PostgreSQL + **PostGIS**                                       | Geo-radius queries in one SQL call                                         |
+| Cache / live state    | Redis                                                          | Live donor locations, pub/sub for scale                                    |
+| Realtime              | Socket.IO                                                      | Live map + status updates                                                  |
+| Auth                  | `jsonwebtoken`, `bcrypt`                                       | JWT auth + password hashing                                                |
+| QR generation         | `qrcode` (npm)                                                 | Render QR on donor screen                                                  |
+| QR verification       | HMAC-SHA256 (via `crypto` / `jsonwebtoken`)                    | Signed, time-limited tokens                                                |
+| QR scanning (web)     | `html5-qrcode`                                                 | Camera-based scan at hospital reception                                    |
+| Push notifications    | Firebase Admin SDK (FCM) or Web Push                           | Best-effort; reliable mainly while the donor's tab is open — see §3        |
+| SMS fallback          | Twilio SDK                                                     | Primary alert channel when a donor's tab isn't open                        |
+| Scheduled jobs        | `node-cron`                                                    | No-show detection, eligibility refresh                                     |
+| Validation            | `zod` or `express-validator`                                   | Request payload validation                                                 |
+| Frontend (dashboards) | React + Vite + TailwindCSS                                     | Bank/Hospital/Admin UIs                                                    |
+| Map                   | Leaflet + `react-leaflet` (OpenStreetMap, free)                | Live donor/hospital map                                                    |
+| Data fetching         | Axios / React Query                                            | API calls, caching                                                         |
+| Charts                | Recharts                                                       | Reports/stats                                                              |
+| Donor web app         | Same React + Vite + TailwindCSS stack as the other dashboards  | One unified codebase, no separate mobile build or app-store step           |
+| Browser geolocation   | `navigator.geolocation.watchPosition()` (built-in, no library) | Location pings while the availability toggle is on                         |
+| Optional web push     | `web-push` (npm) + Service Worker + VAPID keys                 | Best-effort notification when the tab is backgrounded (bonus, not primary) |
+| Security              | HTTPS, `helmet`, `cors`, rate limiting (`express-rate-limit`)  | Basic API hardening                                                        |
 
 ---
 

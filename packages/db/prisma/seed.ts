@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import bcrypt from "bcryptjs";
 import {
   PrismaClient,
+  RequestStatus,
   Role,
   VerificationStatus,
 } from "../generated/prisma/client.ts";
@@ -55,6 +56,30 @@ const donors = [
     score: 95,
     completedCount: 5,
     noShowCount: 0,
+  },
+  {
+    phone: "+919800000004",
+    name: "Kiran Shetty",
+    bloodGroup: "O_NEG",
+    dateOfBirth: new Date("1997-01-09"),
+    weightKg: 71,
+    latitude: 12.9809,
+    longitude: 77.6412,
+    score: 88,
+    completedCount: 3,
+    noShowCount: 0,
+  },
+  {
+    phone: "+919800000005",
+    name: "Farhan Ali",
+    bloodGroup: "A_NEG",
+    dateOfBirth: new Date("1993-05-30"),
+    weightKg: 68,
+    latitude: 12.9,
+    longitude: 77.75,
+    score: 92,
+    completedCount: 7,
+    noShowCount: 1,
   },
 ] as const;
 
@@ -112,7 +137,43 @@ const banks = [
   },
 ] as const;
 
-const allPhones = [...donors, ...hospitals, ...banks].map((row) => row.phone);
+const admins = [
+  {
+    phone: "+919890000000",
+    name: "BloodLink Admin",
+  },
+] as const;
+
+const BLOOD_GROUPS = [
+  "O_NEG",
+  "O_POS",
+  "A_NEG",
+  "A_POS",
+  "B_NEG",
+  "B_POS",
+  "AB_NEG",
+  "AB_POS",
+] as const;
+
+const COMPONENTS = ["WHOLE_BLOOD", "PLATELETS", "PLASMA"] as const;
+
+const URGENCIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
+
+const HISTORY_DAYS = 90;
+
+function mulberry32(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const allPhones = [...donors, ...hospitals, ...banks, ...admins].map(
+  (row) => row.phone,
+);
 
 async function clearExisting() {
   const users = await prisma.user.findMany({
@@ -132,8 +193,14 @@ async function clearExisting() {
     select: { id: true },
   });
   const hospitalIds = hospitalRows.map((row) => row.id);
+  const bankRows = await prisma.bloodBank.findMany({
+    where: { userId: { in: userIds } },
+    select: { id: true },
+  });
+  const bankIds = bankRows.map((row) => row.id);
 
   await prisma.$transaction([
+    prisma.inventory.deleteMany({ where: { bankId: { in: bankIds } } }),
     prisma.requestItem.deleteMany({
       where: { request: { hospitalId: { in: hospitalIds } } },
     }),
@@ -145,7 +212,7 @@ async function clearExisting() {
         ],
       },
     }),
-    prisma.qrToken.deleteMany({
+    prisma.qRToken.deleteMany({
       where: {
         OR: [
           { donorId: { in: donorIds } },
@@ -173,86 +240,177 @@ async function main() {
   await clearExisting();
   const passwordHash = await bcrypt.hash(PASSWORD, 10);
 
-  await prisma.$transaction(async (tx) => {
-    for (const donor of donors) {
-      await tx.user.create({
-        data: {
-          phone: donor.phone,
-          passwordHash,
-          role: Role.DONOR,
-          donor: {
-            create: {
-              name: donor.name,
-              bloodGroup: donor.bloodGroup,
-              dateOfBirth: donor.dateOfBirth,
-              weightKg: donor.weightKg,
-              eligible: true,
-              isOnline: true,
-              latitude: donor.latitude,
-              longitude: donor.longitude,
-              lastPingAt: new Date(),
-              reliability: {
-                create: {
-                  score: donor.score,
-                  completedCount: donor.completedCount,
-                  noShowCount: donor.noShowCount,
+  const createdHospitalIds: string[] = [];
+  const createdBankIds: string[] = [];
+  let historyRequests = 0;
+
+  await prisma.$transaction(
+    async (tx) => {
+      for (const donor of donors) {
+        await tx.user.create({
+          data: {
+            phone: donor.phone,
+            passwordHash,
+            role: Role.DONOR,
+            donor: {
+              create: {
+                name: donor.name,
+                bloodGroup: donor.bloodGroup,
+                dateOfBirth: donor.dateOfBirth,
+                weightKg: donor.weightKg,
+                eligible: true,
+                isOnline: true,
+                latitude: donor.latitude,
+                longitude: donor.longitude,
+                lastPingAt: new Date(),
+                reliability: {
+                  create: {
+                    score: donor.score,
+                    completedCount: donor.completedCount,
+                    noShowCount: donor.noShowCount,
+                  },
                 },
               },
             },
           },
-        },
-      });
-    }
+        });
+      }
 
-    for (const hospital of hospitals) {
-      await tx.user.create({
-        data: {
-          phone: hospital.phone,
-          passwordHash,
-          role: Role.HOSPITAL,
-          hospital: {
-            create: {
-              name: hospital.name,
-              address: hospital.address,
-              latitude: hospital.latitude,
-              longitude: hospital.longitude,
-              contact: hospital.contact,
-              verification: {
-                create: {
-                  documentUrl: "https://example.com/registration.pdf",
-                  status: VerificationStatus.VERIFIED,
-                  reviewedBy: "seed",
-                  reviewedAt: new Date(),
-                },
+      for (const hospital of hospitals) {
+        const user = await tx.user.create({
+          data: {
+            phone: hospital.phone,
+            passwordHash,
+            role: Role.HOSPITAL,
+          },
+        });
+        const row = await tx.hospital.create({
+          data: {
+            userId: user.id,
+            name: hospital.name,
+            address: hospital.address,
+            latitude: hospital.latitude,
+            longitude: hospital.longitude,
+            contact: hospital.contact,
+            verification: {
+              create: {
+                documentUrl: "https://example.com/registration.pdf",
+                status: VerificationStatus.VERIFIED,
+                reviewedBy: "seed",
+                reviewedAt: new Date(),
               },
             },
           },
-        },
-      });
-    }
+        });
+        createdHospitalIds.push(row.id);
+      }
 
-    for (const bank of banks) {
-      await tx.user.create({
-        data: {
-          phone: bank.phone,
-          passwordHash,
-          role: Role.BANK,
-          bloodBank: {
-            create: {
-              name: bank.name,
-              address: bank.address,
-              latitude: bank.latitude,
-              longitude: bank.longitude,
-              contact: bank.contact,
-              verified: true,
-            },
+      for (const bank of banks) {
+        const user = await tx.user.create({
+          data: {
+            phone: bank.phone,
+            passwordHash,
+            role: Role.BANK,
           },
-        },
-      });
-    }
-  });
+        });
+        const row = await tx.bloodBank.create({
+          data: {
+            userId: user.id,
+            name: bank.name,
+            address: bank.address,
+            latitude: bank.latitude,
+            longitude: bank.longitude,
+            contact: bank.contact,
+            verified: true,
+          },
+        });
+        createdBankIds.push(row.id);
+      }
 
-  console.log("Seeded 3 donors, 3 hospitals (verified), 3 blood banks");
+      for (const admin of admins) {
+        await tx.user.create({
+          data: { phone: admin.phone, passwordHash, role: Role.ADMIN },
+        });
+      }
+
+      for (let b = 0; b < createdBankIds.length; b++) {
+        const bankId = createdBankIds[b]!;
+        for (let g = 0; g < BLOOD_GROUPS.length; g++) {
+          for (let c = 0; c < COMPONENTS.length; c++) {
+            await tx.inventory.create({
+              data: {
+                bankId,
+                bloodGroup: BLOOD_GROUPS[g],
+                component: COMPONENTS[c],
+                unitsAvailable: ((g + b * 2 + c * 3) % 7) * 2,
+              },
+            });
+          }
+        }
+      }
+
+      const rand = mulberry32(20260926);
+      const now = Date.now();
+
+      for (let day = HISTORY_DAYS; day >= 1; day--) {
+        const requestCount = Math.floor(rand() * 4);
+        for (let r = 0; r < requestCount; r++) {
+          const hospitalId =
+            createdHospitalIds[Math.floor(rand() * createdHospitalIds.length)]!;
+          const createdAt = new Date(
+            now - day * 86_400_000 + Math.floor(rand() * 86_400_000),
+          );
+          const fulfilled = rand() > 0.15;
+          const itemCount = 1 + Math.floor(rand() * 2);
+          const used = new Set<number>();
+          const items: {
+            bloodGroup: (typeof BLOOD_GROUPS)[number];
+            component: (typeof COMPONENTS)[number];
+            unitsNeeded: number;
+            unitsFulfilled: number;
+          }[] = [];
+
+          while (items.length < itemCount) {
+            const g = Math.floor(rand() * BLOOD_GROUPS.length);
+            if (used.has(g)) continue;
+            used.add(g);
+            const unitsNeeded = 2 + Math.floor(rand() * 4);
+            items.push({
+              bloodGroup: BLOOD_GROUPS[g]!,
+              component: COMPONENTS[Math.floor(rand() * COMPONENTS.length)]!,
+              unitsNeeded,
+              unitsFulfilled: fulfilled
+                ? unitsNeeded
+                : Math.max(0, unitsNeeded - 1 - Math.floor(rand() * 2)),
+            });
+          }
+
+          await tx.emergencyRequest.create({
+            data: {
+              hospitalId,
+              urgency: URGENCIES[Math.floor(rand() * URGENCIES.length)],
+              radiusKm: 5,
+              status: fulfilled
+                ? RequestStatus.FULFILLED
+                : RequestStatus.CLOSED,
+              createdAt,
+              updatedAt: createdAt,
+              items: { create: items },
+            },
+          });
+          historyRequests++;
+        }
+      }
+    },
+    { timeout: 60_000 },
+  );
+
+  console.log(
+    `Seeded ${donors.length} donors, ${hospitals.length} hospitals (verified), ${banks.length} blood banks, ${admins.length} admin`,
+  );
+  console.log(
+    `Seeded ${createdBankIds.length * BLOOD_GROUPS.length * COMPONENTS.length} inventory rows and ${historyRequests} historical requests over ${HISTORY_DAYS} days`,
+  );
   console.log(`Login password for every seeded account: ${PASSWORD}`);
   console.log("\nDonors (first two share a location):");
   for (const donor of donors) {
@@ -271,6 +429,10 @@ async function main() {
     console.log(
       `  ${bank.phone}  ${bank.name.padEnd(24)} ${bank.latitude}, ${bank.longitude}`,
     );
+  }
+  console.log("Admin:");
+  for (const admin of admins) {
+    console.log(`  ${admin.phone}  ${admin.name}`);
   }
 }
 
