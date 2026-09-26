@@ -1,0 +1,10 @@
+{
+  "description": "Connects donors, blood banks, and healthcare centers in real-time to find and manage blood availability, enabling faster emergency response and saving lives.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
