@@ -1,0 +1,131 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
+@import 'leaflet/dist/leaflet.css';
+@import 'tailwindcss';
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-crimson: #D7263D;
+  --color-crimson-dark: #B01E30;
+  --color-navy: #172033;
+  --color-navy-light: #1E2D45;
+  --color-soft: #F6F7F9;
+  --color-success: #16A34A;
+  --color-warning: #D97706;
+  --color-info: #2563EB;
+  --color-critical: #DC2626;
+  --font-display: 'Manrope', sans-serif;
+  --font-body: 'Inter', sans-serif;
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #172033;
+  --card: #ffffff;
+  --card-foreground: #172033;
+  --primary: #D7263D;
+  --primary-foreground: #ffffff;
+  --secondary: #F6F7F9;
+  --secondary-foreground: #172033;
+  --muted: #F1F2F5;
+  --muted-foreground: #6B7280;
+  --accent: #D7263D;
+  --accent-foreground: #ffffff;
+  --border: #E5E7EB;
+  --ring: #D7263D;
+  --radius: 8px;
+}
+
+.dark {
+  --background: #0D1520;
+  --foreground: #E8F0FA;
+  --card: #152030;
+  --card-foreground: #E8F0FA;
+  --secondary: #1C2A3E;
+  --secondary-foreground: #CBD5E1;
+  --muted: #182438;
+  --muted-foreground: #8FA3BE;
+  --border: #1E2D40;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: #ffffff;
+  color: #172033;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Manrope', sans-serif;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
+
+/* Focus styles */
+*:focus-visible {
+  outline: 2px solid #D7263D;
+  outline-offset: 2px;
+}
+
+/* Smooth transitions */
+button, a, input, select, textarea {
+  transition-property: color, background-color, border-color, opacity, box-shadow, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+
+/* Logo hero animation keyframes */
+@keyframes logo-pulse-ring {
+  0% { transform: scale(0.4); opacity: 0.9; }
+  100% { transform: scale(2.8); opacity: 0; }
+}
+
+@keyframes logo-float {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-10px) scale(1.02); }
+}
+
+@keyframes ecg-slide {
+  0% { transform: translateX(0px); }
+  100% { transform: translateX(-80px); }
+}
+
+@keyframes blood-rise {
+  0% { transform: translateY(0px) scale(1); opacity: 0; }
+  8% { opacity: 0.9; }
+  85% { opacity: 0.3; }
+  100% { transform: translateY(-180px) scale(0.5); opacity: 0; }
+}
+
+@keyframes logo-glow-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.7; }
+}
+
+/* Leaflet overrides */
+.leaflet-popup-content-wrapper {
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  padding: 0;
+  overflow: hidden;
+}
+.leaflet-popup-content {
+  margin: 0;
+}
+.leaflet-container {
+  font-family: 'Inter', sans-serif;
+  border-radius: inherit;
+}
