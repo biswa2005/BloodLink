@@ -44,7 +44,7 @@ These are judged at **30% weight (must-have completion)** — build and fully de
 
 ### 2.1 Cryptographic QR Handshake
 
-**What it does:** Once a donor accepts a request, their app displays an encrypted, time-limited QR code. The hospital scans it at reception to cryptographically confirm arrival, block proxy/fake donations, and auto-update the donor's cooldown date — all in one action.
+**What it does:** Once a donor accepts a request, their browser displays an encrypted, time-limited QR code (rendered from a data URL — no native app needed). The hospital scans it at reception to cryptographically confirm arrival, block proxy/fake donations, and auto-update the donor's cooldown date — all in one action.
 
 **How it works:**
 1. On acceptance, backend generates a signed token: `{donor_id, request_id, issued_at, expires_at, nonce}`.
@@ -100,14 +100,18 @@ These are judged at **30% weight (must-have completion)** — build and fully de
 - Dots update their state live: `grey = notified`, `blue = viewed`, `green = accepted / en route`, `gold ring = arrived (QR confirmed)`, `faded = declined/expired`.
 - Tapping a dot shows: blood group, distance, reliability score, current status.
 
+> **Web architecture note:** the donor side of BloodLink is a fully web application (React, same stack as the other dashboards) — not a native or Flutter mobile app. This changes how "presence" and notifications work, noted inline below.
+
 **How to build it:**
 
-1. **Donor "Available Now" toggle** (like a driver going online in Rapido): when ON, the donor app pings `POST /donor/location` every 30–60 seconds with `{lat, lng}`. When OFF (or after a timeout, e.g. 2 hours), pings stop. This is critical for battery life and privacy — donors are never tracked passively.
+1. **Donor "Available Now" toggle** (like a driver going online in Rapido): when ON, the donor's browser tab uses `navigator.geolocation.watchPosition()` and pings `POST /donor/location` every 30–60 seconds with `{lat, lng}`. When OFF (or after a timeout, e.g. 2 hours), pings stop. Add a `beforeunload`/`visibilitychange` handler that calls `PATCH /donor/availability {status:'offline'}` when the tab closes or backgrounds — but see the staleness note below, since this handler isn't guaranteed to fire on a crash or forced close.
 2. **Backend live store:** maintain an in-memory (or Redis) map of `donor_id → {lat, lng, blood_group, status}` for all currently-online donors. Redis is preferable if you want this to scale past a demo.
-3. **Scoped visibility:** when a hospital opens a request, the backend runs a PostGIS radius query to find eligible donors around the hospital's location, and subscribes the hospital's browser to a **WebSocket room** (`request:{id}`).
-4. **Realtime updates:** any donor location/status change in that room is broadcast (`donor_location_update`) so the map updates without polling.
-5. **Frontend rendering:** Leaflet (or Mapbox GL) with custom marker icons — a large pulsing icon for the hospital, small circular markers for donors, colored per blood group and re-styled per status.
-6. **Privacy safeguard:** show only a fuzzed location (snapped to the nearest ~250m grid cell) until a donor accepts; reveal a more precise pin only after acceptance, and only to the hospital that raised that specific active request — never publicly.
+3. **Staleness fallback (web-specific):** because a browser tab can disappear without warning, don't trust the `isOnline` flag alone. Treat any donor whose `lastPingAt` is older than ~90 seconds (roughly two missed pings) as effectively offline when building the candidate pool, even if `isOnline` is still `true` in the DB.
+4. **Scoped visibility:** when a hospital opens a request, the backend runs a PostGIS radius query to find eligible donors around the hospital's location, and subscribes the hospital's browser to a **WebSocket room** (`request:{id}`).
+5. **Realtime updates:** any donor location/status change in that room is broadcast (`donor_location_update`) so the map updates without polling.
+6. **Frontend rendering:** Leaflet (or Mapbox GL) with custom marker icons — a large pulsing icon for the hospital, small circular markers for donors, colored per blood group and re-styled per status.
+7. **Privacy safeguard:** show only a fuzzed location (snapped to the nearest ~250m grid cell) until a donor accepts; reveal a more precise pin only after acceptance, and only to the hospital that raised that specific active request — never publicly.
+8. **Notification channel priority:** since a web tab can't reliably receive push while fully closed the way a native app can, treat **Socket.IO (while the tab is open) + SMS as the primary alert channel**, with Web Push (via a Service Worker + VAPID keys) as a best-effort bonus rather than the main path.
 
 **Why it stands out:** This is the single most "wow" visual moment in your demo video — judges immediately understand it because everyone has used a ride-hailing app. It also gives your Matching Engine (§2.3) a visible, tangible payoff instead of being invisible backend logic.
 
@@ -120,7 +124,7 @@ flowchart TB
     subgraph Clients
         BankUI[Blood Bank Portal - Web]
         HospitalUI[Hospital Console - Web]
-        DonorApp[Donor App - Flutter/PWA]
+        DonorApp[Donor Web App - React/Browser]
         AdminUI[Admin Panel - Web]
     end
 
@@ -165,6 +169,8 @@ flowchart TB
     DonorApp -.QR display.-> QR
     HospitalUI --> Maps
 ```
+
+> All four clients — Bank Portal, Hospital Console, Donor App, and Admin Panel — are web apps sharing one React codebase and one deployment pipeline. There is no separate mobile build.
 
 ---
 
@@ -245,8 +251,10 @@ WebSocket events:
 
 - **Blood Bank Portal:** inventory grid, editable per group/component.
 - **Hospital Console:** multi-group request form, live map (§3), fulfillment progress bars per requested group, QR scanner page (camera-based, e.g. `html5-qrcode`).
-- **Donor App:** registration, availability toggle, incoming request full-screen alert (Accept/Decline), QR display screen, personal stats (donations, reliability score).
+- **Donor Web App:** registration, availability toggle (browser Geolocation permission prompt), incoming-request full-screen alert delivered over the open Socket.IO connection (Accept/Decline), QR display screen (`<img src={qrImageDataUrl} />` — no native rendering needed), personal stats (donations, reliability score). Keep the donor's Socket.IO connection alive for as long as the tab is open and the availability toggle is on.
 - **Admin Panel:** pending hospital verifications, platform-wide stats.
+
+All four are pages/routes in the same React app — donors don't need a separate build, app store listing, or install step, which is a real usability win to mention in your pitch (zero-friction onboarding).
 
 ---
 
@@ -262,16 +270,17 @@ WebSocket events:
 | QR generation | `qrcode` (npm) | Render QR on donor screen |
 | QR verification | HMAC-SHA256 (via `crypto` / `jsonwebtoken`) | Signed, time-limited tokens |
 | QR scanning (web) | `html5-qrcode` | Camera-based scan at hospital reception |
-| Push notifications | Firebase Admin SDK (FCM) | Donor alerts |
-| SMS fallback | Twilio SDK | Donors without the app |
+| Push notifications | Firebase Admin SDK (FCM) or Web Push | Best-effort; reliable mainly while the donor's tab is open — see §3 |
+| SMS fallback | Twilio SDK | Primary alert channel when a donor's tab isn't open |
 | Scheduled jobs | `node-cron` | No-show detection, eligibility refresh |
 | Validation | `zod` or `express-validator` | Request payload validation |
 | Frontend (dashboards) | React + Vite + TailwindCSS | Bank/Hospital/Admin UIs |
 | Map | Leaflet + `react-leaflet` (OpenStreetMap, free) | Live donor/hospital map |
 | Data fetching | Axios / React Query | API calls, caching |
 | Charts | Recharts | Reports/stats |
-| Mobile/Donor app | Flutter | Camera, background-safe location ping, native push |
-| Flutter packages | `qr_flutter`, `geolocator`, `firebase_messaging`, `socket_io_client`, `dio` | QR display, location, push, realtime, HTTP |
+| Donor web app | Same React + Vite + TailwindCSS stack as the other dashboards | One unified codebase, no separate mobile build or app-store step |
+| Browser geolocation | `navigator.geolocation.watchPosition()` (built-in, no library) | Location pings while the availability toggle is on |
+| Optional web push | `web-push` (npm) + Service Worker + VAPID keys | Best-effort notification when the tab is backgrounded (bonus, not primary) |
 | Security | HTTPS, `helmet`, `cors`, rate limiting (`express-rate-limit`) | Basic API hardening |
 
 ---
@@ -295,6 +304,8 @@ QR handshake generation + scan verification, reliability scoring + no-show cron,
 
 - QR tokens are short-lived (~15 min), single-use, and HMAC-signed — replay and forgery are rejected server-side.
 - Donor location is only shared while the "Available Now" toggle is on, is fuzzed (~250m grid) until acceptance, and is visible only to the hospital of the active request — never public or persisted long-term.
+- Browser geolocation requires HTTPS and an explicit permission grant from the donor — design the UI to explain why location is needed before triggering the browser's permission prompt, since a rejected prompt silently breaks the toggle.
+- Because a browser tab can close without warning, treat `isOnline` as advisory only; use `lastPingAt` staleness (§3) as the source of truth for whether a donor is really reachable before including them in a match.
 - Hospitals must be admin-verified before they can raise requests, preventing fake emergencies.
 - All personal data (phone numbers, health-adjacent info) should be clearly flagged in your submission as using synthetic/test data, per the hackathon's data-handling rules.
 

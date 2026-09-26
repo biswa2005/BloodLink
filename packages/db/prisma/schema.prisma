@@ -11,3 +11,284 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  DONOR
+  HOSPITAL
+  BANK
+  ADMIN
+}
+
+enum BloodGroup {
+  A_POS
+  A_NEG
+  B_POS
+  B_NEG
+  AB_POS
+  AB_NEG
+  O_POS
+  O_NEG
+}
+
+enum Component {
+  WHOLE_BLOOD
+  PLATELETS
+  PLASMA
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum Urgency {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum RequestStatus {
+  OPEN
+  MATCHED
+  FULFILLED
+  CLOSED
+}
+
+enum ResponseStatus {
+  NOTIFIED
+  VIEWED
+  ACCEPTED
+  DECLINED
+  ARRIVED
+  NO_SHOW
+  EXPIRED
+}
+
+// ---------------------------------------------------------------------------
+// Auth / Users
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  phone        String   @unique
+  email        String?  @unique
+  passwordHash String
+  role         Role
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  donor     Donor?
+  hospital  Hospital?
+  bloodBank BloodBank?
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Blood Banks
+// ---------------------------------------------------------------------------
+
+model BloodBank {
+  id        String      @id @default(cuid())
+  userId    String      @unique
+  user      User        @relation(fields: [userId], references: [id])
+  name      String
+  address   String
+  latitude  Float
+  longitude Float
+  contact   String
+  verified  Boolean     @default(false)
+  inventory Inventory[]
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@map("blood_banks")
+}
+
+model Inventory {
+  id             String     @id @default(cuid())
+  bankId         String
+  bank           BloodBank  @relation(fields: [bankId], references: [id])
+  bloodGroup     BloodGroup
+  component      Component
+  unitsAvailable Int        @default(0)
+  lastUpdated    DateTime   @updatedAt
+
+  @@unique([bankId, bloodGroup, component])
+  @@map("inventory")
+}
+
+// ---------------------------------------------------------------------------
+// Hospitals
+// ---------------------------------------------------------------------------
+
+model Hospital {
+  id           String                @id @default(cuid())
+  userId       String                @unique
+  user         User                  @relation(fields: [userId], references: [id])
+  name         String
+  address      String
+  latitude     Float
+  longitude    Float
+  contact      String
+  verification HospitalVerification?
+  requests     EmergencyRequest[]
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@map("hospitals")
+}
+
+model HospitalVerification {
+  id           String              @id @default(cuid())
+  hospitalId   String              @unique
+  hospital     Hospital            @relation(fields: [hospitalId], references: [id])
+  documentUrl  String
+  status       VerificationStatus  @default(PENDING)
+  reviewedBy   String?
+  reviewedAt   DateTime?
+  createdAt    DateTime            @default(now())
+
+  @@map("hospital_verifications")
+}
+
+// ---------------------------------------------------------------------------
+// Donors
+// ---------------------------------------------------------------------------
+
+model Donor {
+  id               String     @id @default(cuid())
+  userId           String     @unique
+  user             User       @relation(fields: [userId], references: [id])
+  name             String
+  bloodGroup       BloodGroup
+  dateOfBirth      DateTime?
+  weightKg         Float?
+  lastDonationDate DateTime?
+  eligible         Boolean    @default(true)
+
+  // Live availability / map presence (Rapido-style "online" toggle)
+  isOnline   Boolean   @default(false)
+  latitude   Float?
+  longitude  Float?
+  lastPingAt DateTime?
+
+  reliability DonorReliability?
+  responses   RequestResponse[]
+  qrTokens    QRToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("donors")
+}
+
+model DonorReliability {
+  id             String   @id @default(cuid())
+  donorId        String   @unique
+  donor          Donor    @relation(fields: [donorId], references: [id])
+  completedCount Int      @default(0)
+  noShowCount    Int      @default(0)
+  score          Int      @default(100)
+  updatedAt      DateTime @updatedAt
+
+  @@map("donor_reliability")
+}
+
+// ---------------------------------------------------------------------------
+// Emergency Requests (multi blood-group support)
+// ---------------------------------------------------------------------------
+
+model EmergencyRequest {
+  id         String            @id @default(cuid())
+  hospitalId String
+  hospital   Hospital          @relation(fields: [hospitalId], references: [id])
+  urgency    Urgency           @default(MEDIUM)
+  radiusKm   Float             @default(5)
+  status     RequestStatus     @default(OPEN)
+
+  items     RequestItem[]
+  responses RequestResponse[]
+  qrTokens  QRToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("emergency_requests")
+}
+
+// One row per blood group requested within a single EmergencyRequest,
+// e.g. a request can have {O_POS: 3 units} and {AB_NEG: 2 units} together.
+model RequestItem {
+  id             String           @id @default(cuid())
+  requestId      String
+  request        EmergencyRequest @relation(fields: [requestId], references: [id])
+  bloodGroup     BloodGroup
+  component      Component        @default(WHOLE_BLOOD)
+  unitsNeeded    Int
+  unitsFulfilled Int              @default(0)
+
+  @@unique([requestId, bloodGroup, component])
+  @@map("request_items")
+}
+
+// One row per donor notified/responding to a given request.
+model RequestResponse {
+  id          String           @id @default(cuid())
+  requestId   String
+  request     EmergencyRequest @relation(fields: [requestId], references: [id])
+  donorId     String
+  donor       Donor            @relation(fields: [donorId], references: [id])
+  status      ResponseStatus   @default(NOTIFIED)
+  respondedAt DateTime?
+  createdAt   DateTime         @default(now())
+
+  @@unique([requestId, donorId])
+  @@map("request_responses")
+}
+
+// ---------------------------------------------------------------------------
+// QR Handshake (cryptographic arrival confirmation)
+// ---------------------------------------------------------------------------
+
+model QRToken {
+  id            String           @id @default(cuid())
+  donorId       String
+  donor         Donor            @relation(fields: [donorId], references: [id])
+  requestId     String
+  request       EmergencyRequest @relation(fields: [requestId], references: [id])
+  signedPayload String           @db.Text // HMAC-signed / JWT payload encoded into the QR
+  expiresAt     DateTime
+  used          Boolean          @default(false)
+  usedAt        DateTime?
+  createdAt     DateTime         @default(now())
+
+  @@map("qr_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// NOTE — Adding real PostGIS support (optional, for production-grade
+// radius queries instead of computing distance in application code):
+//
+// 1. Enable the extension in your migration:
+//      CREATE EXTENSION IF NOT EXISTS postgis;
+//
+// 2. Add a generated geography column via raw SQL in a migration
+//    (Prisma Client can't query geography columns directly, only via
+//    $queryRaw / $executeRaw):
+//      ALTER TABLE donors ADD COLUMN geom geography(Point, 4326)
+//        GENERATED ALWAYS AS (ST_MakePoint(longitude, latitude)::geography) STORED;
+//      CREATE INDEX donors_geom_idx ON donors USING GIST (geom);
+//
+// 3. Query nearby donors with:
+//      SELECT * FROM donors
+//      WHERE ST_DWithin(geom, ST_MakePoint($1, $2)::geography, $3)
+//
+//    via prisma.$queryRaw` ... ` in your Matching Engine service.
+// ---------------------------------------------------------------------------
