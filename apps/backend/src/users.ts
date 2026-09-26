@@ -1,4 +1,5 @@
 import type { BloodGroup, Prisma, Role, VerificationStatus } from "@repo/db";
+import { isEligible, nextEligibleAt } from "./utils/eligibility.ts";
 
 export const userInclude = {
   donor: true,
@@ -21,7 +22,10 @@ export type PublicUser = {
     bloodGroup: BloodGroup;
     eligible: boolean;
     lastDonationDate: Date | null;
+    eligibleAt: Date | null;
     isOnline: boolean;
+    latitude: number | null;
+    longitude: number | null;
   } | null;
   hospital: {
     id: string;
@@ -54,9 +58,12 @@ export function toPublicUser(user: UserWithProfile): PublicUser {
           id: user.donor.id,
           name: user.donor.name,
           bloodGroup: user.donor.bloodGroup,
-          eligible: user.donor.eligible,
+          eligible: isEligible(user.donor.lastDonationDate),
           lastDonationDate: user.donor.lastDonationDate,
+          eligibleAt: nextEligibleAt(user.donor.lastDonationDate),
           isOnline: user.donor.isOnline,
+          latitude: user.donor.latitude,
+          longitude: user.donor.longitude,
         }
       : null,
     hospital: user.hospital

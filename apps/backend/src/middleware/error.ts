@@ -21,11 +21,9 @@ export function errorHandler(
     return;
   }
   if (isUniqueViolation(err)) {
-    res
-      .status(409)
-      .json({
-        error: { code: "CONFLICT", message: "Resource already exists" },
-      });
+    res.status(409).json({
+      error: { code: "CONFLICT", message: "Resource already exists" },
+    });
     return;
   }
   if (
@@ -39,9 +37,7 @@ export function errorHandler(
     return;
   }
   console.error(err);
-  res
-    .status(500)
-    .json({
-      error: { code: "INTERNAL_ERROR", message: "Internal server error" },
-    });
+  res.status(500).json({
+    error: { code: "INTERNAL_ERROR", message: "Internal server error" },
+  });
 }

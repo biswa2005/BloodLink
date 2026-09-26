@@ -5,12 +5,17 @@ import { HttpError } from "../lib/http-error.ts";
 import { signToken } from "../lib/jwt.ts";
 import { isUniqueViolation, prisma } from "../lib/prisma.ts";
 import { toPublicUser, userInclude, type PublicUser } from "../users.ts";
+import { isEligible } from "../utils/eligibility.ts";
+import { isBloodGroup, isValidCoordinates } from "../utils/enums.ts";
 
 type DonorProfile = {
   name: string;
   bloodGroup: BloodGroup;
   dateOfBirth?: string;
   weightKg?: number;
+  latitude?: number;
+  longitude?: number;
+  lastDonationDate?: string;
 };
 
 type LocationProfile = {
@@ -59,6 +64,69 @@ export async function register(input: RegisterInput): Promise<AuthResult> {
 
   const passwordHash = await bcrypt.hash(input.password, 10);
 
+  if (input.role === Role.DONOR) {
+    if (!isBloodGroup(input.profile.bloodGroup)) {
+      throw new HttpError(
+        400,
+        "INVALID_BLOOD_GROUP",
+        `Unknown blood group: ${String(input.profile.bloodGroup)}`,
+      );
+    }
+    if (
+      input.profile.dateOfBirth !== undefined &&
+      Number.isNaN(new Date(input.profile.dateOfBirth).getTime())
+    ) {
+      throw new HttpError(
+        400,
+        "INVALID_DATE_OF_BIRTH",
+        "dateOfBirth must be a valid date (YYYY-MM-DD)",
+      );
+    }
+    const { latitude, longitude, lastDonationDate } = input.profile;
+    if (latitude !== undefined || longitude !== undefined) {
+      if (!isValidCoordinates(latitude, longitude)) {
+        throw new HttpError(
+          400,
+          "INVALID_LOCATION",
+          "latitude/longitude must be valid coordinates — use your device location",
+        );
+      }
+    }
+    if (lastDonationDate !== undefined) {
+      const parsed = new Date(lastDonationDate);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new HttpError(
+          400,
+          "INVALID_LAST_DONATION_DATE",
+          "lastDonationDate must be a valid date (YYYY-MM-DD)",
+        );
+      }
+      if (parsed.getTime() > Date.now()) {
+        throw new HttpError(
+          400,
+          "LAST_DONATION_IN_FUTURE",
+          "lastDonationDate cannot be in the future",
+        );
+      }
+    }
+  } else {
+    const { address, latitude, longitude, contact } = input.profile;
+    if (!address?.trim() || !contact?.trim()) {
+      throw new HttpError(
+        400,
+        "PROFILE_INCOMPLETE",
+        "address and contact are required",
+      );
+    }
+    if (!isValidCoordinates(latitude, longitude)) {
+      throw new HttpError(
+        400,
+        "INVALID_LOCATION",
+        "latitude/longitude must be valid coordinates — use your device location",
+      );
+    }
+  }
+
   let createdId: string;
   try {
     const created = await prisma.$transaction(async (tx) => {
@@ -66,6 +134,9 @@ export async function register(input: RegisterInput): Promise<AuthResult> {
         data: { phone: input.phone, passwordHash, role: input.role },
       });
       if (input.role === Role.DONOR) {
+        const lastDonation = input.profile.lastDonationDate
+          ? new Date(input.profile.lastDonationDate)
+          : undefined;
         await tx.donor.create({
           data: {
             userId: user.id,
@@ -76,6 +147,19 @@ export async function register(input: RegisterInput): Promise<AuthResult> {
               : {}),
             ...(input.profile.weightKg !== undefined
               ? { weightKg: input.profile.weightKg }
+              : {}),
+            ...(input.profile.latitude !== undefined &&
+            input.profile.longitude !== undefined
+              ? {
+                  latitude: input.profile.latitude,
+                  longitude: input.profile.longitude,
+                }
+              : {}),
+            ...(lastDonation
+              ? {
+                  lastDonationDate: lastDonation,
+                  eligible: isEligible(lastDonation),
+                }
               : {}),
           },
         });
